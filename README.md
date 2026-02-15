@@ -97,7 +97,7 @@ pip install nanobot-ai
 
 > [!TIP]
 > Set your API key in `~/.nanobot/config.json`.
-> Get API keys: [OpenRouter](https://openrouter.ai/keys) (Global) · [Brave Search](https://brave.com/search/api/) (optional, for web search)
+> Get API keys: [OpenRouter](https://openrouter.ai/keys) (Global) · [Brave Search](https://brave.com/search/api/) or [Tavily](https://tavily.com/) (optional, for web search)
 
 **1. Initialize**
 
@@ -119,9 +119,48 @@ For OpenRouter - recommended for global users:
     "defaults": {
       "model": "anthropic/claude-opus-4-5"
     }
+  },
+  "tools": {
+    "web": {
+      "search": {
+        "provider": "brave",
+        "braveApiKey": "BSA-xxx",
+        "maxResults": 5
+      }
+    }
   }
 }
 ```
+
+Use Tavily instead:
+
+```json
+{
+  "tools": {
+    "web": {
+      "search": {
+        "provider": "tavily",
+        "tavilyApiKey": "tvly-xxx",
+        "maxResults": 5,
+        "tavilySearchDepth": "basic"
+      }
+    }
+  }
+}
+```
+
+Search options:
+
+- `provider`: Search backend. `brave` (default) or `tavily`.
+- `braveApiKey`: Brave Search API key (used when `provider` is `brave`).
+- `tavilyApiKey`: Tavily API key (used when `provider` is `tavily`).
+- `maxResults`: Number of results for `web_search` (default `5`, range `1-10`).
+- `tavilySearchDepth`: Tavily search depth (`basic` default, also `advanced`, `fast`, `ultra-fast`).
+
+Compatibility note:
+
+- Legacy `tools.web.search.apiKey` is still supported for Brave.
+- New configs should use `braveApiKey` and `tavilyApiKey`.
 
 **3. Chat**
 
