@@ -255,6 +255,7 @@ Connect nanobot to your favorite chat platform. Want to build your own? See the 
 | **Feishu** | App ID + App Secret |
 | **DingTalk** | App Key + App Secret |
 | **Slack** | Bot token + App-Level token |
+| **Mattermost** | Server URL + Bot token |
 | **Matrix** | Homeserver URL + Access token |
 | **Email** | IMAP/SMTP credentials |
 | **QQ** | App ID + App Secret |
@@ -689,6 +690,54 @@ DM the bot directly or @mention it in a channel — it should respond!
 > [!TIP]
 > - `groupPolicy`: `"mention"` (default — respond only when @mentioned), `"open"` (respond to all channel messages), or `"allowlist"` (restrict to specific channels).
 > - DM policy defaults to open. Set `"dm": {"enabled": false}` to disable DMs.
+
+</details>
+
+<details>
+<summary><b>Mattermost</b></summary>
+
+Uses **Mattermost WebSocket + REST API** — no public callback URL required.
+
+**1. Create a bot token**
+- In Mattermost, create or choose a bot account
+- Generate a bot token with permission to read and post in the target team/channel
+- Copy the server URL (for example `https://your-mattermost.example.com`)
+- Add the bot to the channel you want nanobot to use
+
+**2. Configure nanobot**
+
+```json
+{
+  "channels": {
+    "mattermost": {
+      "enabled": true,
+      "serverUrl": "https://your-mattermost.example.com",
+      "token": "YOUR_MATTERMOST_BOT_TOKEN",
+      "allowFrom": ["YOUR_MATTERMOST_USER_ID"],
+      "groupPolicy": "mention",
+      "replyInThread": true,
+      "dm": {
+        "enabled": true,
+        "policy": "open"
+      }
+    }
+  }
+}
+```
+
+**3. Run**
+
+```bash
+nanobot gateway
+```
+
+DM the bot directly, or mention `@botname` in a channel.
+
+> [!TIP]
+> - `groupPolicy`: `"mention"` (default) responds only when the bot is mentioned in channels, while `"open"` responds to all channel messages.
+> - `replyInThread: true` keeps channel conversations isolated per Mattermost thread via `root_id`.
+> - `allowFrom` still applies after DM/channel policy checks. Use `["*"]` only if you want to allow everyone.
+> - File attachments are uploaded first and then linked to the outgoing post automatically.
 
 </details>
 
