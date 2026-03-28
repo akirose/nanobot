@@ -47,14 +47,45 @@ class _FakeAsyncClient:
 
 
 def _make_channel(**kwargs) -> MattermostChannel:
+    allow_from = kwargs.pop("allow_from", ["*"])
     config = MattermostConfig(
         enabled=True,
         server_url="https://mm.example.com",
         token="tok",
-        allow_from=["*"],
+        allow_from=allow_from,
         **kwargs,
     )
     return MattermostChannel(config, MessageBus())
+
+
+def _posted_payload(
+    *,
+    user_id: str = "user1",
+    channel_id: str = "chan1",
+    message: str = "hello",
+    post_id: str = "post1",
+    root_id: str = "",
+    team_id: str | None = None,
+) -> dict[str, object]:
+    return {
+        "event": "posted",
+        "data": {
+            "post": json.dumps(
+                {
+                    "id": post_id,
+                    "user_id": user_id,
+                    "channel_id": channel_id,
+                    "message": message,
+                    "root_id": root_id,
+                    **({"team_id": team_id} if team_id is not None else {}),
+                }
+            )
+        },
+        "broadcast": {
+            "channel_id": channel_id,
+            **({"team_id": team_id} if team_id is not None else {}),
+        },
+    }
 
 
 def test_default_config_returns_disabled_dict() -> None:
@@ -168,9 +199,14 @@ async def test_posted_event_publishes_inbound_message_for_mention() -> None:
         "broadcast": {"channel_id": "chan1", "team_id": "team1"},
     }
 
+    async def fake_build_sender_id(user_id: str, _data: dict[str, object], _post: dict[str, object]) -> str:
+        return f"{user_id}|alice"
+
+    channel._build_sender_id = fake_build_sender_id  # type: ignore[method-assign]
+
     await channel._handle_websocket_message(json.dumps(payload))
     msg = await channel.bus.consume_inbound()
-    assert msg.sender_id == "user1"
+    assert msg.sender_id == "user1|alice"
     assert msg.chat_id == "chan1"
     assert msg.content == "hello"
     assert msg.metadata["mattermost"]["post_id"] == "post1"
@@ -206,39 +242,16 @@ async def test_posted_event_ignores_channel_message_without_mention() -> None:
 
 @pytest.mark.asyncio
 async def test_posted_event_respects_dm_policy_allowlist() -> None:
-    channel = _make_channel(dm={"enabled": True, "policy": "allowlist", "allow_from": ["user1"]})
+    channel = _make_channel(
+        allow_from_match_mode="id",
+        dm={"enabled": True, "policy": "allowlist", "allow_from": ["user1"]},
+    )
     channel._bot_user_id = "bot1"
     channel._bot_username = "nanobot"
     channel._channel_types["dm1"] = "D"
 
-    allowed = {
-        "event": "posted",
-        "data": {
-            "post": json.dumps(
-                {
-                    "id": "post1",
-                    "user_id": "user1",
-                    "channel_id": "dm1",
-                    "message": "hello",
-                }
-            )
-        },
-        "broadcast": {"channel_id": "dm1"},
-    }
-    denied = {
-        "event": "posted",
-        "data": {
-            "post": json.dumps(
-                {
-                    "id": "post2",
-                    "user_id": "user2",
-                    "channel_id": "dm1",
-                    "message": "hello",
-                }
-            )
-        },
-        "broadcast": {"channel_id": "dm1"},
-    }
+    allowed = _posted_payload(user_id="user1", channel_id="dm1")
+    denied = _posted_payload(user_id="user2", channel_id="dm1", post_id="post2")
 
     await channel._handle_websocket_message(json.dumps(allowed))
     assert channel.bus.inbound_size == 1
@@ -246,6 +259,132 @@ async def test_posted_event_respects_dm_policy_allowlist() -> None:
 
     await channel._handle_websocket_message(json.dumps(denied))
     assert channel.bus.inbound_size == 0
+
+
+@pytest.mark.asyncio
+async def test_posted_event_respects_group_channel_allowlist() -> None:
+    channel = _make_channel(group_policy="allowlist", group_allow_from=["chan1"])
+    channel._bot_user_id = "bot1"
+    channel._bot_username = "nanobot"
+    channel._channel_types["chan1"] = "O"
+    channel._channel_types["chan2"] = "O"
+
+    await channel._handle_websocket_message(json.dumps(_posted_payload(channel_id="chan1")))
+    assert channel.bus.inbound_size == 1
+    await channel.bus.consume_inbound()
+
+    await channel._handle_websocket_message(json.dumps(_posted_payload(channel_id="chan2", post_id="post2")))
+    assert channel.bus.inbound_size == 0
+
+
+@pytest.mark.asyncio
+async def test_group_channel_allowlist_does_not_block_dm() -> None:
+    channel = _make_channel(
+        group_policy="allowlist",
+        group_allow_from=["chan1"],
+        dm={"enabled": True, "policy": "open", "allow_from": []},
+    )
+    channel._bot_user_id = "bot1"
+    channel._bot_username = "nanobot"
+    channel._channel_types["dm1"] = "D"
+
+    await channel._handle_websocket_message(json.dumps(_posted_payload(channel_id="dm1")))
+    assert channel.bus.inbound_size == 1
+
+
+@pytest.mark.asyncio
+async def test_is_dm_allowed_accepts_id_from_allowlist_in_id_mode() -> None:
+    channel = _make_channel(
+        allow_from_match_mode="id",
+        dm={"enabled": True, "policy": "allowlist", "allow_from": ["user1"]},
+    )
+
+    assert await channel._is_dm_allowed("user1") is True
+    assert await channel._is_dm_allowed("user2") is False
+
+
+@pytest.mark.asyncio
+async def test_is_dm_allowed_accepts_username_from_allowlist_in_username_mode() -> None:
+    channel = _make_channel(
+        allow_from_match_mode="username",
+        dm={"enabled": True, "policy": "allowlist", "allow_from": ["alice"]},
+    )
+
+    async def fake_get_user_identity(user_id: str) -> dict[str, str | None]:
+        return {"username": "alice", "email": None} if user_id == "user1" else {"username": "mallory", "email": None}
+
+    channel._get_user_identity = fake_get_user_identity  # type: ignore[method-assign]
+
+    assert await channel._is_dm_allowed("user1") is True
+    assert await channel._is_dm_allowed("user2") is False
+
+
+@pytest.mark.asyncio
+async def test_is_dm_allowed_accepts_email_from_allowlist_in_email_mode() -> None:
+    channel = _make_channel(
+        allow_from_match_mode="email",
+        dm={"enabled": True, "policy": "allowlist", "allow_from": ["alice@example.com"]},
+    )
+
+    async def fake_get_user_identity(user_id: str) -> dict[str, str | None]:
+        return (
+            {"username": "alice", "email": "alice@example.com"}
+            if user_id == "user1"
+            else {"username": "mallory", "email": "mallory@example.com"}
+        )
+
+    channel._get_user_identity = fake_get_user_identity  # type: ignore[method-assign]
+
+    assert await channel._is_dm_allowed("user1") is True
+    assert await channel._is_dm_allowed("user2") is False
+
+
+def test_is_allowed_accepts_mattermost_id_and_username_formats() -> None:
+    channel = _make_channel(allow_from=["user1"], allow_from_match_mode="id")
+
+    assert channel.is_allowed("user1") is True
+    assert channel.is_allowed("user9") is False
+
+
+def test_is_allowed_accepts_username_in_username_mode() -> None:
+    channel = _make_channel(allow_from=["alice"], allow_from_match_mode="username")
+
+    assert channel.is_allowed("user1|alice") is True
+    assert channel.is_allowed("user1|bob") is False
+
+
+@pytest.mark.asyncio
+async def test_is_allowed_accepts_email_in_email_mode() -> None:
+    channel = _make_channel(allow_from=["alice@example.com"], allow_from_match_mode="email")
+
+    async def fake_get_user_identity(user_id: str) -> dict[str, str | None]:
+        assert user_id == "user1"
+        return {"username": "alice", "email": "Alice@Example.com"}
+
+    channel._get_user_identity = fake_get_user_identity  # type: ignore[method-assign]
+
+    assert await channel._is_sender_allowed("user1") is True
+    assert await channel._is_sender_allowed("user2") is False
+
+
+@pytest.mark.asyncio
+async def test_is_allowed_rejects_email_mode_when_email_missing() -> None:
+    channel = _make_channel(allow_from=["alice@example.com"], allow_from_match_mode="email")
+
+    async def fake_get_user_identity(_user_id: str) -> dict[str, str | None]:
+        return {"username": "alice", "email": None}
+
+    channel._get_user_identity = fake_get_user_identity  # type: ignore[method-assign]
+
+    assert await channel._is_sender_allowed("user1") is False
+
+
+def test_is_allowed_rejects_invalid_mattermost_sender_shapes() -> None:
+    channel = _make_channel(allow_from=["alice"], allow_from_match_mode="username")
+
+    assert channel.is_allowed("attacker|alice|extra") is False
+    assert channel.is_allowed("|alice") is False
+    assert channel.is_allowed("user1|") is False
 
 
 @pytest.mark.asyncio
@@ -286,6 +425,33 @@ async def test_load_bot_identity_reads_users_me() -> None:
     assert fake.get_calls[0]["url"].endswith("/api/v4/users/me")
     assert channel._bot_user_id == "bot1"
     assert channel._bot_username == "nanobot"
+
+
+@pytest.mark.asyncio
+async def test_build_sender_id_fetches_username_when_missing() -> None:
+    channel = _make_channel()
+    fake = _FakeAsyncClient()
+    fake.get_responses.append(_FakeResponse({"id": "user1", "username": "alice"}))
+    channel._client = fake
+
+    sender_id = await channel._build_sender_id("user1", {}, {"user_id": "user1"})
+
+    assert sender_id == "user1|alice"
+    assert fake.get_calls[0]["url"].endswith("/api/v4/users/user1")
+
+
+@pytest.mark.asyncio
+async def test_build_sender_id_falls_back_to_user_id_when_username_lookup_fails() -> None:
+    channel = _make_channel()
+
+    async def fail_lookup(_user_id: str) -> str | None:
+        raise RuntimeError("lookup failed")
+
+    channel._get_username = fail_lookup  # type: ignore[method-assign]
+
+    sender_id = await channel._build_sender_id("user1", {}, {"user_id": "user1"})
+
+    assert sender_id == "user1"
 
 
 @pytest.mark.asyncio

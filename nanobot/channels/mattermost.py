@@ -15,7 +15,7 @@ import websockets
 from loguru import logger
 from pydantic import Field
 
-from nanobot.bus.events import OutboundMessage
+from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import Base
@@ -39,7 +39,9 @@ class MattermostConfig(Base):
     server_url: str = ""
     token: str = ""
     allow_from: list[str] = Field(default_factory=list)
-    group_policy: Literal["mention", "open"] = "mention"
+    allow_from_match_mode: Literal["id", "username", "email"] = "id"
+    group_policy: Literal["mention", "open", "allowlist"] = "mention"
+    group_allow_from: list[str] = Field(default_factory=list)
     reply_in_thread: bool = True
     dm: MattermostDMConfig = Field(default_factory=MattermostDMConfig)
 
@@ -64,6 +66,8 @@ class MattermostChannel(BaseChannel):
         self._bot_user_id: str | None = None
         self._bot_username: str | None = None
         self._channel_types: dict[str, str] = {}
+        self._usernames: dict[str, str] = {}
+        self._user_emails: dict[str, str] = {}
 
     async def start(self) -> None:
         """Start the Mattermost channel and listen for websocket events."""
@@ -173,16 +177,16 @@ class MattermostChannel(BaseChannel):
             logger.debug("Ignoring Mattermost posted event with non-object post payload")
             return
 
-        sender_id = str(post.get("user_id") or "")
+        user_id = str(post.get("user_id") or "")
         chat_id = str(post.get("channel_id") or broadcast.get("channel_id") or "")
         content = post.get("message") or ""
         post_id = str(post.get("id") or "")
         root_id = str(post.get("root_id") or "") or None
         team_id = str(post.get("team_id") or broadcast.get("team_id") or "") or None
 
-        if not sender_id or not chat_id:
+        if not user_id or not chat_id:
             return
-        if self._bot_user_id and sender_id == self._bot_user_id:
+        if self._bot_user_id and user_id == self._bot_user_id:
             return
 
         try:
@@ -192,33 +196,62 @@ class MattermostChannel(BaseChannel):
             return
 
         if self._is_dm_channel(channel_type):
-            if not self._is_dm_allowed(sender_id):
+            if not await self._is_dm_allowed(user_id):
                 return
-        elif not self._should_respond_in_channel(content):
+        else:
+            if not self._should_respond_in_channel(chat_id, content):
+                return
+
+        if not await self._is_sender_allowed(user_id):
             return
 
-        if not self.is_allowed(sender_id):
-            return
-
+        sender_id = await self._build_sender_id(user_id, data, post)
         clean_content = self._strip_bot_mention(content)
         session_key = None
         if self.config.reply_in_thread and not self._is_dm_channel(channel_type):
             session_key = f"mattermost:{chat_id}:{root_id or post_id}"
 
-        await self._handle_message(
-            sender_id=sender_id,
-            chat_id=chat_id,
-            content=clean_content,
-            metadata={
-                "mattermost": {
-                    "post_id": post_id,
-                    "root_id": root_id,
-                    "channel_type": channel_type,
-                    "team_id": team_id,
-                }
-            },
-            session_key=session_key,
+        await self.bus.publish_inbound(
+            InboundMessage(
+                channel=self.name,
+                sender_id=str(sender_id),
+                chat_id=str(chat_id),
+                content=clean_content,
+                metadata={
+                    "mattermost": {
+                        "post_id": post_id,
+                        "root_id": root_id,
+                        "channel_type": channel_type,
+                        "team_id": team_id,
+                    }
+                },
+                session_key_override=session_key,
+            )
         )
+
+    def is_allowed(self, sender_id: str) -> bool:
+        """Apply synchronous allow checks used by BaseChannel."""
+        allow_list = getattr(self.config, "allow_from", [])
+        if not allow_list:
+            return False
+        if "*" in allow_list:
+            return True
+
+        mode = self.config.allow_from_match_mode
+        sender_str = str(sender_id)
+        user_id, username = self._parse_sender_identity(sender_str)
+
+        if mode == "id":
+            return user_id in allow_list if user_id else sender_str in allow_list
+        if mode == "username":
+            return bool(username and username in allow_list)
+        if mode == "email":
+            if not user_id:
+                return False
+            email = self._user_emails.get(user_id)
+            normalized_allow = {value.lower() for value in allow_list}
+            return bool(email and email.lower() in normalized_allow)
+        return False
 
     async def _load_bot_identity(self) -> None:
         """Load the authenticated bot user identity."""
@@ -232,6 +265,76 @@ class MattermostChannel(BaseChannel):
             raise ValueError("Mattermost /users/me returned non-object JSON")
         self._bot_user_id = str(user.get("id") or "") or None
         self._bot_username = user.get("username") or None
+        if self._bot_user_id and self._bot_username:
+            self._usernames[self._bot_user_id] = self._bot_username
+            email = user.get("email")
+            if email:
+                self._user_emails[self._bot_user_id] = str(email).lower()
+
+    async def _build_sender_id(
+        self, user_id: str, event_data: dict[str, Any], post: dict[str, Any]
+    ) -> str:
+        """Build a sender identifier that prefers id|username when possible."""
+        username = self._extract_event_username(event_data, post)
+        if not username:
+            try:
+                username = await self._get_username(user_id)
+            except Exception as e:
+                logger.debug("Mattermost username lookup failed for {}: {}", user_id, e)
+                username = None
+        return f"{user_id}|{username}" if username else user_id
+
+    def _extract_event_username(self, event_data: dict[str, Any], post: dict[str, Any]) -> str | None:
+        """Extract username from event payloads when present."""
+        for key in ("sender_name", "username"):
+            value = event_data.get(key)
+            if isinstance(value, str) and value:
+                return value
+        for key in ("username",):
+            value = post.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return None
+
+    async def _get_username(self, user_id: str) -> str | None:
+        """Resolve and cache Mattermost username for a user ID."""
+        identity = await self._get_user_identity(user_id)
+        return identity.get("username")
+
+    async def _get_user_identity(self, user_id: str) -> dict[str, str | None]:
+        """Resolve and cache Mattermost identity fields for a user ID."""
+        cached_username = self._usernames.get(user_id)
+        cached_email = self._user_emails.get(user_id)
+        if cached_username is not None or cached_email is not None:
+            return {"username": cached_username, "email": cached_email}
+
+        identity = await self._fetch_user_identity(user_id)
+        username = identity.get("username")
+        email = identity.get("email")
+        if username:
+            self._usernames[user_id] = username
+        if email:
+            self._user_emails[user_id] = email
+        return identity
+
+    async def _fetch_user_identity(self, user_id: str) -> dict[str, str | None]:
+        """Fetch a Mattermost username and email by user ID."""
+        if not self._client:
+            self._client = httpx.AsyncClient(timeout=30.0)
+        response = await self._client.get(
+            self._api_url(f"/users/{user_id}"),
+            headers=self._headers(),
+        )
+        response.raise_for_status()
+        user = response.json()
+        if not isinstance(user, dict):
+            raise ValueError("Mattermost /users/{user_id} returned non-object JSON")
+        username = user.get("username")
+        email = user.get("email")
+        return {
+            "username": str(username) if username else None,
+            "email": str(email).lower() if email else None,
+        }
 
     async def _get_channel_type(self, channel_id: str, event_data: dict[str, Any]) -> str:
         """Resolve and cache Mattermost channel type."""
@@ -306,23 +409,64 @@ class MattermostChannel(BaseChannel):
         """Return True for direct-message channels."""
         return channel_type == "D"
 
-    def _is_dm_allowed(self, sender_id: str) -> bool:
+    async def _is_dm_allowed(self, user_id: str) -> bool:
         """Check DM policy before global allow_from filtering."""
         if not self.config.dm.enabled:
             return False
-        if self.config.dm.policy == "allowlist":
-            return sender_id in self.config.dm.allow_from
-        return True
+        if self.config.dm.policy != "allowlist":
+            return True
+        return await self._matches_allow_list(user_id, self.config.dm.allow_from)
 
-    def _should_respond_in_channel(self, text: str) -> bool:
+    async def _is_sender_allowed(self, user_id: str) -> bool:
+        """Check global sender allow_from policy."""
+        return await self._matches_allow_list(user_id, self.config.allow_from)
+
+    async def _matches_allow_list(self, user_id: str, allow_list: list[str]) -> bool:
+        """Match a Mattermost sender against the configured allowlist mode."""
+        if not allow_list:
+            return False
+        if "*" in allow_list:
+            return True
+
+        mode = self.config.allow_from_match_mode
+        if mode == "id":
+            return user_id in allow_list
+
+        try:
+            identity = await self._get_user_identity(user_id)
+        except Exception as e:
+            logger.debug("Mattermost identity lookup failed for {}: {}", user_id, e)
+            return False
+
+        if mode == "username":
+            username = identity.get("username")
+            return bool(username and username in allow_list)
+        if mode == "email":
+            email = identity.get("email")
+            normalized_allow = {value.lower() for value in allow_list}
+            return bool(email and email.lower() in normalized_allow)
+        return False
+
+    def _should_respond_in_channel(self, chat_id: str, text: str) -> bool:
         """Check whether a group/channel message should trigger the bot."""
         if self.config.group_policy == "open":
             return True
+        if self.config.group_policy == "allowlist":
+            return chat_id in self.config.group_allow_from
         if self.config.group_policy == "mention":
             if not self._bot_username:
                 return False
             return f"@{self._bot_username}" in text
         return False
+
+    def _parse_sender_identity(self, sender_id: str) -> tuple[str | None, str | None]:
+        """Parse the internal sender identity string."""
+        if sender_id.count("|") != 1:
+            return (sender_id or None, None)
+        user_id, username = sender_id.split("|", 1)
+        if not user_id or not username:
+            return (None, None)
+        return user_id, username
 
     def _strip_bot_mention(self, text: str) -> str:
         """Remove Mattermost @username mentions directed at the bot."""

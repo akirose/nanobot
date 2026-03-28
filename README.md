@@ -713,8 +713,10 @@ Uses **Mattermost WebSocket + REST API** — no public callback URL required.
       "enabled": true,
       "serverUrl": "https://your-mattermost.example.com",
       "token": "YOUR_MATTERMOST_BOT_TOKEN",
+      "allowFromMatchMode": "id",
       "allowFrom": ["YOUR_MATTERMOST_USER_ID"],
       "groupPolicy": "mention",
+      "groupAllowFrom": [],
       "replyInThread": true,
       "dm": {
         "enabled": true,
@@ -734,9 +736,14 @@ nanobot gateway
 DM the bot directly, or mention `@botname` in a channel.
 
 > [!TIP]
-> - `groupPolicy`: `"mention"` (default) responds only when the bot is mentioned in channels, while `"open"` responds to all channel messages.
+> - `allowFromMatchMode`: `"id"` (default), `"username"`, or `"email"`.
+> - When `allowFromMatchMode` is `"id"`, put Mattermost user IDs in `allowFrom`.
+> - When `allowFromMatchMode` is `"username"`, put Mattermost usernames in `allowFrom`.
+> - When `allowFromMatchMode` is `"email"`, put user email addresses in `allowFrom`. This requires the bot to be able to read user email fields from Mattermost.
+> - `groupPolicy`: `"mention"` (default) responds only when the bot is mentioned in channels, `"open"` responds to all channel messages, and `"allowlist"` only accepts messages from channel IDs listed in `groupAllowFrom`.
 > - `replyInThread: true` keeps channel conversations isolated per Mattermost thread via `root_id`.
-> - `allowFrom` still applies after DM/channel policy checks. Use `["*"]` only if you want to allow everyone.
+> - For stricter access control, prefer the default `"id"` mode because usernames and email addresses may change.
+> - Use `["*"]` only if you want to allow everyone.
 > - File attachments are uploaded first and then linked to the outgoing post automatically.
 
 </details>
