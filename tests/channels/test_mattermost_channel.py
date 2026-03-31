@@ -94,6 +94,7 @@ def test_default_config_returns_disabled_dict() -> None:
     assert cfg["enabled"] is False
     assert "serverUrl" in cfg
     assert "token" in cfg
+    assert cfg["reactEmojiName"] == "star-struck"
 
 
 def test_init_from_dict_validates_aliases() -> None:
@@ -204,6 +205,10 @@ async def test_posted_event_publishes_inbound_message_for_mention() -> None:
 
     channel._build_sender_id = fake_build_sender_id  # type: ignore[method-assign]
 
+    fake = _FakeAsyncClient()
+    fake.post_responses.append(_FakeResponse({}, status_code=201))
+    channel._client = fake
+
     await channel._handle_websocket_message(json.dumps(payload))
     msg = await channel.bus.consume_inbound()
     assert msg.sender_id == "user1|alice"
@@ -212,6 +217,13 @@ async def test_posted_event_publishes_inbound_message_for_mention() -> None:
     assert msg.metadata["mattermost"]["post_id"] == "post1"
     assert msg.metadata["mattermost"]["team_id"] == "team1"
     assert msg.session_key == "mattermost:chan1:post1"
+
+    assert fake.post_calls[0]["url"].endswith("/api/v4/reactions")
+    assert fake.post_calls[0]["json"] == {
+        "user_id": "bot1",
+        "post_id": "post1",
+        "emoji_name": "star-struck",
+    }
 
 
 @pytest.mark.asyncio

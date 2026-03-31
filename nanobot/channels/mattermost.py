@@ -38,6 +38,7 @@ class MattermostConfig(Base):
     enabled: bool = False
     server_url: str = ""
     token: str = ""
+    react_emoji_name: str = "star-struck"
     allow_from: list[str] = Field(default_factory=list)
     allow_from_match_mode: Literal["id", "username", "email"] = "id"
     group_policy: Literal["mention", "open", "allowlist"] = "mention"
@@ -210,6 +211,8 @@ class MattermostChannel(BaseChannel):
         session_key = None
         if self.config.reply_in_thread and not self._is_dm_channel(channel_type):
             session_key = f"mattermost:{chat_id}:{root_id or post_id}"
+
+        await self._add_reaction(post_id)
 
         await self.bus.publish_inbound(
             InboundMessage(
@@ -389,6 +392,27 @@ class MattermostChannel(BaseChannel):
         payload = response.json()
         file_infos = payload.get("file_infos") or []
         return [str(info.get("id")) for info in file_infos if info.get("id")]
+
+    async def _add_reaction(self, post_id: str) -> None:
+        """Add emoji reaction to an inbound post (best-effort)."""
+        if not post_id or not self.config.react_emoji_name or not self._bot_user_id:
+            return
+        if not self._client:
+            self._client = httpx.AsyncClient(timeout=30.0)
+
+        try:
+            response = await self._client.post(
+                self._api_url("/reactions"),
+                headers=self._headers(),
+                json={
+                    "user_id": self._bot_user_id,
+                    "post_id": post_id,
+                    "emoji_name": self.config.react_emoji_name,
+                },
+            )
+            response.raise_for_status()
+        except Exception as e:
+            logger.debug("Mattermost reaction add failed for {}: {}", post_id, e)
 
     def _headers(self) -> dict[str, str]:
         """Return authentication headers for Mattermost REST and websocket requests."""
