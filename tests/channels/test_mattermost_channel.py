@@ -530,6 +530,32 @@ async def test_posted_event_reaction_failure_does_not_block_inbound_publish() ->
 
 
 @pytest.mark.asyncio
+async def test_dm_allowed_user_adds_reaction_for_each_message() -> None:
+    channel = _make_channel(
+        allow_from_match_mode="id",
+        dm={"enabled": True, "policy": "allowlist", "allow_from": ["user1"]},
+    )
+    channel._bot_user_id = "bot1"
+    channel._bot_username = "nanobot"
+    channel._channel_types["dm1"] = "D"
+
+    fake = _FakeAsyncClient()
+    fake.post_responses.extend([
+        _FakeResponse({}, status_code=201),
+        _FakeResponse({}, status_code=201),
+    ])
+    channel._client = fake
+
+    await channel._handle_websocket_message(json.dumps(_posted_payload(user_id="user1", channel_id="dm1", post_id="post1")))
+    await channel._handle_websocket_message(json.dumps(_posted_payload(user_id="user1", channel_id="dm1", post_id="post2")))
+
+    assert channel.bus.inbound_size == 2
+    assert len(fake.post_calls) == 2
+    assert fake.post_calls[0]["json"]["post_id"] == "post1"
+    assert fake.post_calls[1]["json"]["post_id"] == "post2"
+
+
+@pytest.mark.asyncio
 async def test_posted_event_ignores_message_when_channel_type_lookup_fails() -> None:
     channel = _make_channel(group_policy="open")
     channel._bot_user_id = "bot1"
