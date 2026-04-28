@@ -84,7 +84,11 @@ class WebSearchTool(Tool):
     """Search the web using configured provider."""
 
     name = "web_search"
-    description = "Search the web. Returns titles, URLs, and snippets."
+    description = (
+        "Search the web. Returns titles, URLs, and snippets. "
+        "count defaults to 5 (max 10). "
+        "Use web_fetch to read a specific page in full."
+    )
 
     def __init__(self, config: WebSearchConfig | None = None, proxy: str | None = None):
         from nanobot.config.schema import WebSearchConfig
@@ -92,9 +96,36 @@ class WebSearchTool(Tool):
         self.config = config if config is not None else WebSearchConfig()
         self.proxy = proxy
 
+    def _effective_provider(self) -> str:
+        """Resolve the backend that execute() will actually use."""
+        provider = self.config.provider.strip().lower() or "brave"
+        if provider == "duckduckgo":
+            return "duckduckgo"
+        if provider == "brave":
+            api_key = self.config.api_key or os.environ.get("BRAVE_API_KEY", "")
+            return "brave" if api_key else "duckduckgo"
+        if provider == "tavily":
+            api_key = self.config.api_key or os.environ.get("TAVILY_API_KEY", "")
+            return "tavily" if api_key else "duckduckgo"
+        if provider == "searxng":
+            base_url = (self.config.base_url or os.environ.get("SEARXNG_BASE_URL", "")).strip()
+            return "searxng" if base_url else "duckduckgo"
+        if provider == "jina":
+            api_key = self.config.api_key or os.environ.get("JINA_API_KEY", "")
+            return "jina" if api_key else "duckduckgo"
+        if provider == "kagi":
+            api_key = self.config.api_key or os.environ.get("KAGI_API_KEY", "")
+            return "kagi" if api_key else "duckduckgo"
+        return provider
+
     @property
     def read_only(self) -> bool:
         return True
+
+    @property
+    def exclusive(self) -> bool:
+        """DuckDuckGo searches are serialized because ddgs is not concurrency-safe."""
+        return self._effective_provider() == "duckduckgo"
 
     async def execute(self, query: str, count: int | None = None, **kwargs: Any) -> str:
         provider = self.config.provider.strip().lower() or "brave"
@@ -110,6 +141,8 @@ class WebSearchTool(Tool):
             return await self._search_jina(query, n)
         elif provider == "brave":
             return await self._search_brave(query, n)
+        elif provider == "kagi":
+            return await self._search_kagi(query, n)
         else:
             return f"Error: unknown search provider '{provider}'"
 
@@ -200,6 +233,29 @@ class WebSearchTool(Tool):
             logger.warning("Jina search failed ({}), falling back to DuckDuckGo", e)
             return await self._search_duckduckgo(query, n)
 
+    async def _search_kagi(self, query: str, n: int) -> str:
+        api_key = self.config.api_key or os.environ.get("KAGI_API_KEY", "")
+        if not api_key:
+            logger.warning("KAGI_API_KEY not set, falling back to DuckDuckGo")
+            return await self._search_duckduckgo(query, n)
+        try:
+            async with httpx.AsyncClient(proxy=self.proxy) as client:
+                r = await client.get(
+                    "https://kagi.com/api/v0/search",
+                    params={"q": query, "limit": n},
+                    headers={"Authorization": f"Bot {api_key}"},
+                    timeout=10.0,
+                )
+                r.raise_for_status()
+            # t=0 items are search results; other values are related searches, etc.
+            items = [
+                {"title": d.get("title", ""), "url": d.get("url", ""), "content": d.get("snippet", "")}
+                for d in r.json().get("data", []) if d.get("t") == 0
+            ]
+            return _format_results(query, items, n)
+        except Exception as e:
+            return f"Error: {e}"
+
     async def _search_duckduckgo(self, query: str, n: int) -> str:
         try:
             # Note: duckduckgo_search is synchronous and does its own requests
@@ -239,7 +295,11 @@ class WebFetchTool(Tool):
     """Fetch and extract content from a URL."""
 
     name = "web_fetch"
-    description = "Fetch URL and extract readable content (HTML → markdown/text)."
+    description = (
+        "Fetch a URL and extract readable content (HTML → markdown/text). "
+        "Output is capped at maxChars (default 50 000). "
+        "Works for most web pages and docs; may fail on login-walled or JS-heavy sites."
+    )
 
     def __init__(self, max_chars: int = 50000, proxy: str | None = None):
         self.max_chars = max_chars
