@@ -546,6 +546,36 @@ def test_builtin_channel_init_from_dict():
     assert ch.config.allow_from == ["*"]
 
 
+def test_mattermost_channel_default_config():
+    from nanobot.channels.mattermost import MattermostChannel
+
+    cfg = MattermostChannel.default_config()
+
+    assert isinstance(cfg, dict)
+    assert cfg["enabled"] is False
+    assert "serverUrl" in cfg
+    assert "token" in cfg
+
+
+def test_mattermost_channel_init_from_dict():
+    from nanobot.channels.mattermost import MattermostChannel
+
+    bus = MessageBus()
+    ch = MattermostChannel(
+        {
+            "enabled": False,
+            "serverUrl": "https://mm.example.com",
+            "token": "test-tok",
+            "allowFrom": ["*"],
+        },
+        bus,
+    )
+
+    assert ch.config.server_url == "https://mm.example.com"
+    assert ch.config.token == "test-tok"
+    assert ch.config.allow_from == ["*"]
+
+
 def test_channels_config_send_max_retries_default():
     """ChannelsConfig should have send_max_retries with default value of 3."""
     cfg = ChannelsConfig()

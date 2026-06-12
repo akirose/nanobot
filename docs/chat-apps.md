@@ -47,6 +47,7 @@ If `nanobot channels status` does not show the channel as enabled, the config sn
 | **Feishu** | App ID + App Secret |
 | **DingTalk** | App Key + App Secret |
 | **Slack** | Bot token + App-Level token |
+| **Mattermost** | Server URL + Bot token |
 | **Matrix** | Homeserver URL + Access token |
 | **Email** | IMAP/SMTP credentials |
 | **QQ** | App ID + App Secret |
@@ -576,6 +577,58 @@ DM the bot directly or @mention it in a channel — it should respond!
 > - `groupAllowFrom`: channel IDs the bot may respond in when `groupPolicy` is `"allowlist"`.
 > - `groupRequireMention`: when `true` and `groupPolicy` is `"allowlist"`, the bot only replies to channels in `groupAllowFrom` **and** only when @mentioned (instead of every message). No effect for `"mention"`/`"open"`. Use this to scope the bot to approved channels while keeping mention-only behavior.
 > - DM policy defaults to open. Set `"dm": {"enabled": false}` to disable DMs.
+
+</details>
+
+<details>
+<summary><b>Mattermost</b></summary>
+
+Uses **Mattermost WebSocket + REST API** - no public callback URL required.
+
+**1. Create a bot token**
+- In Mattermost, create or choose a bot account.
+- Generate a bot token with permission to read and post in the target team/channel.
+- Copy the server URL, for example `https://your-mattermost.example.com`.
+- Add the bot to the channels where it should respond.
+
+**2. Configure nanobot**
+
+```json
+{
+  "channels": {
+    "mattermost": {
+      "enabled": true,
+      "serverUrl": "https://your-mattermost.example.com",
+      "token": "YOUR_MATTERMOST_BOT_TOKEN",
+      "allowFromMatchMode": "id",
+      "allowFrom": ["YOUR_MATTERMOST_USER_ID"],
+      "groupPolicy": "mention",
+      "groupAllowFrom": [],
+      "replyInThread": true,
+      "dm": {
+        "enabled": true,
+        "policy": "open"
+      }
+    }
+  }
+}
+```
+
+**3. Run**
+
+```bash
+nanobot gateway
+```
+
+DM the bot directly, or mention `@botname` in a channel.
+
+> [!TIP]
+> - `allowFromMatchMode`: `"id"` (default), `"username"`, or `"email"`. Prefer `"id"` because usernames and email addresses may change.
+> - `allowFrom`: allowed Mattermost users. Use `[]` to require pairing for DMs, or `["*"]` only when everyone who can reach the bot should be allowed.
+> - `groupPolicy`: `"mention"` (default), `"open"`, or `"allowlist"`.
+> - `groupAllowFrom`: channel IDs accepted when `groupPolicy` is `"allowlist"`.
+> - `replyInThread: true` keeps channel conversations isolated per Mattermost thread via `root_id`.
+> - File attachments are uploaded to Mattermost before the outgoing post is created.
 
 </details>
 
