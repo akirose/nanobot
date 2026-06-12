@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import httpx
@@ -9,6 +11,33 @@ import pytest
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.mattermost import MattermostChannel, MattermostConfig
+
+
+def test_module_import_does_not_require_websockets_for_status_discovery() -> None:
+    code = r"""
+import builtins
+
+real_import = builtins.__import__
+
+def blocked_import(name, *args, **kwargs):
+    if name == "websockets" or name.startswith("websockets."):
+        raise ModuleNotFoundError(name)
+    return real_import(name, *args, **kwargs)
+
+builtins.__import__ = blocked_import
+from nanobot.channels.mattermost import MattermostChannel
+print(MattermostChannel.display_name)
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "Mattermost"
 
 
 class _FakeResponse:

@@ -11,7 +11,6 @@ from typing import Any, Literal
 from urllib.parse import urlparse, urlunparse
 
 import httpx
-import websockets
 from httpx import HTTPStatusError
 from loguru import logger
 from pydantic import Field
@@ -64,7 +63,7 @@ class MattermostChannel(BaseChannel):
         super().__init__(config, bus)
         self.config: MattermostConfig = config
         self._client: httpx.AsyncClient | None = None
-        self._ws: websockets.WebSocketClientProtocol | None = None
+        self._ws: Any | None = None
         self._bot_user_id: str | None = None
         self._bot_username: str | None = None
         self._channel_types: dict[str, str] = {}
@@ -92,6 +91,8 @@ class MattermostChannel(BaseChannel):
                 await self._client.aclose()
                 self._client = None
             return
+
+        import websockets
 
         ws_url = self._websocket_url()
         headers = self._headers()

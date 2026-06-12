@@ -166,6 +166,16 @@ def test_discover_all_includes_builtins():
         assert name in discover_channel_names()
 
 
+def test_discover_all_includes_mattermost_builtin():
+    from nanobot.channels.registry import discover_all
+
+    with patch(_EP_TARGET, return_value=[]):
+        result = discover_all()
+
+    assert "mattermost" in result
+    assert result["mattermost"].display_name == "Mattermost"
+
+
 def test_discover_all_includes_external_plugin():
     from nanobot.channels.registry import discover_all
 
