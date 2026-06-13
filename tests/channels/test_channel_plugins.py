@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
+import tomllib
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -17,6 +20,9 @@ from nanobot.config.schema import ChannelsConfig, Config
 from nanobot.providers.transcription import GroqTranscriptionProvider as _GroqProvider
 from nanobot.providers.transcription import OpenAITranscriptionProvider as _OpenAIProvider
 from nanobot.utils.restart import RestartNotice
+
+_MATTERMOST_PLUGIN_DIR = Path(__file__).resolve().parents[2] / "nanobot-channel-mattermost"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -149,6 +155,32 @@ def test_discover_plugins_handles_load_error():
     assert "broken" not in result
 
 
+def test_discover_plugins_skips_non_channel_classes():
+    from nanobot.channels.registry import discover_plugins
+
+    class NotAChannel:
+        pass
+
+    ep = _make_entry_point("invalid", NotAChannel)
+    with patch(_EP_TARGET, return_value=[ep]):
+        result = discover_plugins()
+
+    assert "invalid" not in result
+
+
+def test_mattermost_plugin_pyproject_entry_point_loads_real_channel():
+    pyproject_path = _MATTERMOST_PLUGIN_DIR / "pyproject.toml"
+    data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    target = data["project"]["entry-points"]["nanobot.channels"]["mattermost"]
+    module_name, attr = target.split(":", 1)
+
+    module = importlib.import_module(module_name)
+    cls = getattr(module, attr)
+
+    assert cls.name == "mattermost"
+    assert cls.display_name == "Mattermost"
+
+
 # ---------------------------------------------------------------------------
 # discover_all — merge & priority
 # ---------------------------------------------------------------------------
@@ -166,14 +198,18 @@ def test_discover_all_includes_builtins():
         assert name in discover_channel_names()
 
 
-def test_discover_all_includes_mattermost_builtin():
+def test_discover_all_includes_mattermost_external_plugin_when_no_builtin():
     from nanobot.channels.registry import discover_all
 
-    with patch(_EP_TARGET, return_value=[]):
+    ep = _make_entry_point("mattermost", _FakePlugin)
+    with (
+        patch("nanobot.channels.registry.discover_channel_names", return_value=[]),
+        patch(_EP_TARGET, return_value=[ep]),
+    ):
         result = discover_all()
 
     assert "mattermost" in result
-    assert result["mattermost"].display_name == "Mattermost"
+    assert result["mattermost"] is _FakePlugin
 
 
 def test_discover_all_includes_external_plugin():
@@ -557,7 +593,7 @@ def test_builtin_channel_init_from_dict():
 
 
 def test_mattermost_channel_default_config():
-    from nanobot.channels.mattermost import MattermostChannel
+    from nanobot_channel_mattermost import MattermostChannel
 
     cfg = MattermostChannel.default_config()
 
@@ -568,7 +604,7 @@ def test_mattermost_channel_default_config():
 
 
 def test_mattermost_channel_init_from_dict():
-    from nanobot.channels.mattermost import MattermostChannel
+    from nanobot_channel_mattermost import MattermostChannel
 
     bus = MessageBus()
     ch = MattermostChannel(

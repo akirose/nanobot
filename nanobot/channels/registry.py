@@ -11,6 +11,8 @@ if TYPE_CHECKING:
     from nanobot.channels.base import BaseChannel
 
 _INTERNAL = frozenset({"base", "manager", "registry"})
+_EXTERNALIZED = frozenset({"mattermost"})
+_EXCLUDED = _INTERNAL | _EXTERNALIZED
 
 
 def discover_channel_names() -> list[str]:
@@ -20,7 +22,7 @@ def discover_channel_names() -> list[str]:
     return [
         name
         for _, name, ispkg in pkgutil.iter_modules(pkg.__path__)
-        if name not in _INTERNAL and not ispkg
+        if name not in _EXCLUDED and not ispkg
     ]
 
 
@@ -40,12 +42,17 @@ def discover_plugins(enabled_names: set[str] | None = None) -> dict[str, type[Ba
     """Discover external channel plugins registered via entry_points."""
     from importlib.metadata import entry_points
 
+    from nanobot.channels.base import BaseChannel as _Base
+
     plugins: dict[str, type[BaseChannel]] = {}
     for ep in entry_points(group="nanobot.channels"):
         if enabled_names is not None and ep.name not in enabled_names:
             continue
         try:
             cls = ep.load()
+            if not isinstance(cls, type) or not issubclass(cls, _Base) or cls is _Base:
+                logger.warning("Ignoring invalid channel plugin '{}': not a BaseChannel subclass", ep.name)
+                continue
             plugins[ep.name] = cls
         except Exception as e:
             logger.warning("Failed to load channel plugin '{}': {}", ep.name, e)

@@ -1070,20 +1070,26 @@ def _configure_providers(config: Config) -> None:
 def _get_channel_info() -> dict[str, tuple[str, type[BaseModel]]]:
     """Get channel info (display name + config class) from channel modules."""
     import importlib
+    import inspect
 
     from nanobot.channels.registry import discover_all
 
     result: dict[str, tuple[str, type[BaseModel]]] = {}
     for name, channel_cls in discover_all().items():
         try:
-            mod = importlib.import_module(f"nanobot.channels.{name}")
             config_name = channel_cls.__name__.replace("Channel", "Config")
+            mod = inspect.getmodule(channel_cls)
+            if mod is None:
+                mod = importlib.import_module(channel_cls.__module__)
             config_cls = getattr(mod, config_name, None)
+            if config_cls is None and channel_cls.__module__.startswith("nanobot.channels."):
+                mod = importlib.import_module(f"nanobot.channels.{name}")
+                config_cls = getattr(mod, config_name, None)
             if config_cls and isinstance(config_cls, type) and issubclass(config_cls, BaseModel):
                 display_name = getattr(channel_cls, "display_name", name.capitalize())
                 result[name] = (display_name, config_cls)
         except Exception:
-            logger.warning("Failed to load channel module: {}", name)
+            logger.warning("Failed to load channel config class: {}", name)
     return result
 
 

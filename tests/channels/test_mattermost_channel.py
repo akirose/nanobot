@@ -7,15 +7,19 @@ from pathlib import Path
 
 import httpx
 import pytest
+from nanobot_channel_mattermost import MattermostChannel, MattermostConfig
 
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
-from nanobot.channels.mattermost import MattermostChannel, MattermostConfig
+
+_MATTERMOST_PLUGIN_DIR = Path(__file__).resolve().parents[2] / "nanobot-channel-mattermost"
 
 
 def test_module_import_does_not_require_websockets_for_status_discovery() -> None:
-    code = r"""
+    code = f"""
 import builtins
+import sys
+sys.path.insert(0, {str(_MATTERMOST_PLUGIN_DIR)!r})
 
 real_import = builtins.__import__
 
@@ -25,7 +29,7 @@ def blocked_import(name, *args, **kwargs):
     return real_import(name, *args, **kwargs)
 
 builtins.__import__ = blocked_import
-from nanobot.channels.mattermost import MattermostChannel
+from nanobot_channel_mattermost import MattermostChannel
 print(MattermostChannel.display_name)
 """
 

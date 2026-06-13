@@ -585,6 +585,18 @@ DM the bot directly or @mention it in a channel — it should respond!
 
 Uses **Mattermost WebSocket + REST API** - no public callback URL required.
 
+Mattermost is distributed as an external channel plugin. Install it before enabling the `channels.mattermost` config section:
+
+```bash
+python -m pip install nanobot-channel-mattermost
+```
+
+When developing from this repository checkout, install the bundled plugin package instead:
+
+```bash
+python -m pip install -e ./nanobot-channel-mattermost
+```
+
 **1. Create a bot token**
 - In Mattermost, create or choose a bot account.
 - Generate a bot token with permission to read and post in the target team/channel.
